@@ -65,9 +65,20 @@ vm_page_alloc(void)
   // the next available frame. Be sure to check to see if a frame is
   // available, and return 0 if it is not. For a hint of how the frame
   // table is structured, please see the "free_range" helper fucntion.
-  // YOUR CODE HERE
+  
+  // Save the first frame
+  struct frame *first_frame = frame_table;
 
-  return 0x00;
+  // No frame is available
+  if(first_frame == (struct frame*) 0)
+  {
+    return 0;
+  }
+
+  // Advance the frame table
+  frame_table = frame_table->next;
+
+  return first_frame;
 }
 
 
@@ -81,7 +92,10 @@ vm_page_free(void *pa)
   // This function should link this physical page back into the frame
   // table. The deallocated page should be come the first free frame
   // in the table.
-  // YOUR CODE HERE
+  struct frame* f = (struct frame*) pa;
+
+  f->next = frame_table;
+  frame_table = f;
 }
 
 
@@ -113,9 +127,22 @@ vm_lookup(pagetable_t pagetable, uint64 va)
   // address and return the physical address.
   // HINT: This function is subtely different than the corresponding
   //       function in XV6. Take care when copying!
-  // YOUR CODE HERE
 
-  return 0;
+  // Invalid Address
+  if(va >= MAXVA)
+  {
+    return 0;
+  }
+
+  pte_t* pte = walk_pgtable(pagetable, va, 0);
+
+  if(pte == 0)
+  {
+    return 0;
+  }
+
+  return PTE2PA(*pte) + (va % PGSIZE);
+
 }
 
 
@@ -126,7 +153,7 @@ vm_lookup(pagetable_t pagetable, uint64 va)
 int
 vm_page_insert(pagetable_t pagetable, uint64 va, uint64 pa, int perm)
 {
-    // This function should round va down to to a page address. After
+    // This function should round va down to a page address. After
     // doing this, use walk_pgtable to find the correct page table
     // entry. If the address is already present, panic with the
     // message 'remap'. If the address is not present, add the pte for
@@ -135,9 +162,35 @@ vm_page_insert(pagetable_t pagetable, uint64 va, uint64 pa, int perm)
     // HINT: You will have to use walk_pgtable's allocation abilities.
     //       Ask yourself, how can this function fail without
     //       panicking?
-    // YOUR CODE HERE
+    
+    // Round down va to get the virtual page address
+    uint64 virtual_pa = PGROUNDDOWN(va);
 
-    return -1;
+    // Check if physical pa is aligned
+    if((pa % PGSIZE) != 0)
+    {
+      panic("vm_page_insert: pa not aligned");
+    }
+
+    // Allocate the page
+    pte_t* pte = walk_pgtable(pagetable, virtual_pa, 1);
+
+    if(pte == 0)
+    {
+      return -1;
+    }
+
+    // Address is already present
+    if(*pte & PTE_V)
+    {
+      panic("remap");
+    }
+
+    // Set the PTE for the page at the physical page address specified
+    *pte = PA2PTE(pa) | perm | PTE_V;
+
+    // Return
+    return 0;
 }
 
 
@@ -152,7 +205,31 @@ vm_page_remove(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   // the page is not present, then this function should panic. If
   // do_free is set to 1, this function should deallocate the
   // corresponding physical page frame.
-  // YOUR CODE HERE
+
+  if(va % PGSIZE)
+  {
+    panic("vm_page_remove: va is not page aligned");
+  }
+
+  for(int i = 0; i < npages; i++)
+  {
+    // Get the entry for va
+    pte_t* pte = walk_pgtable(pagetable, virtual_pa, 0); 
+
+    // If dne, panic
+    if(pte == 0)
+    {
+      panic("vm_page_remove: not found");
+    }
+
+    // Deallocate if do_free is set
+    if(do_free)
+    {
+      vm_page_free(pte);
+    }
+
+    virtual_pa += PGSIZE;
+  }
 }
 
 
@@ -167,8 +244,31 @@ vm_map_range(pagetable_t pagetable, uint64 va, uint64 size, int perm)
     // necessarily page alligned, and so you must round it down.
     // We will allocate a new physical page frame for each page, and
     // then use vm_page_insert to add the page to the table.
-    // YOUR CODE HERE
-    return -1;
+    
+    // Round down to get the virtual address of the first pa to alloc
+    uint64 first_virtual_pa = PGROUNDDOWN(va);
+
+    // Round down to get the virtual address of the last pa to alloc
+    uint64 last_virtual_pa = PGROUNDDOWN(va + size);
+
+    // Check each page and alloc if need be
+    for(uint64 virtual_pa = first_virtual_pa; virtual_pa <= last_virtual_pa; virtual_pa += PGSIZE)
+    {
+      uint64 pa = (uint64) vm_page_alloc();
+      
+      // No page to allocate
+      if(!pa)
+      {
+        return -1;
+      }
+
+      if(vm_page_insert(pagetable, virtual_pa, pa, perm) == -1)
+      {
+        return -1;
+      }
+    }
+
+    return 0;
 }
 
 
@@ -216,7 +316,7 @@ make_kernel_pagetable(void)
   pagetable_t kpgtbl;
 
   kpgtbl = (pagetable_t) vm_page_alloc();
-  memset(kpgtbl, 0, PGSIZE);
+  memset(kpgtbl, 0, PGSIZE); 
 
   // uart registers
   kernel_map_pages(kpgtbl, UART0, UART0, PGSIZE, PTE_R | PTE_W);
@@ -270,8 +370,32 @@ kernel_map_range(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int p
   // address. It will not use vm_page_alloc as the memory used by this
   // function is already set aside by the freerange for the use of the
   // kernel. This function will only be used at boot time.
-  // YOUR CODE HERE
-  return -1;
+
+    // Round down to get the virtual address of the first page to alloc
+    uint64 first_virtual_pa = PGROUNDDOWN(va);
+
+    // Round down to get the virtual address of the last page to alloc
+    uint64 last_virtual_pa = PGROUNDDOWN(va + size - 1);
+
+    // Check each page and alloc if need be
+    for(uint64 virtual_pa = first_virtual_pa; virtual_pa <= last_virtual_pa; virtual_pa += PGSIZE)
+    {
+
+      pte_t* pte = walk_pgtable(pagetable, virtual_pa, 1);
+
+      if(pte)
+      {
+        *pte = PA2PTE(pa) | perm | PTE_V;
+      }
+      else
+      {
+        return -1;
+      }
+
+      pa += PGSIZE;
+    }
+
+    return 0;
 }
 
 
