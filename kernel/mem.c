@@ -206,29 +206,22 @@ vm_page_remove(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   // do_free is set to 1, this function should deallocate the
   // corresponding physical page frame.
 
-  if(va % PGSIZE)
-  {
-    panic("vm_page_remove: va is not page aligned");
-  }
+  uint64 a;
+  pte_t *pte;
 
-  for(int i = 0; i < npages; i++)
-  {
-    // Get the entry for va
-    pte_t* pte = walk_pgtable(pagetable, virtual_pa, 0); 
+  if((va % PGSIZE) != 0)
+    panic("uvmunmap: not aligned");
 
-    // If dne, panic
-    if(pte == 0)
-    {
-      panic("vm_page_remove: not found");
+  for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
+    if((pte = walk_pgtable(pagetable, a, 0)) == 0) // leaf page table entry allocated?
+      panic("vm_page_remove: Page not found"); 
+    if((*pte & PTE_V) == 0)  // has physical page been allocated?
+      panic("vm_page_remove: Page not allocated");
+    if(do_free){
+      uint64 pa = PTE2PA(*pte);
+      vm_page_free((void*)pa);
     }
-
-    // Deallocate if do_free is set
-    if(do_free)
-    {
-      vm_page_free(pte);
-    }
-
-    virtual_pa += PGSIZE;
+    *pte = 0;
   }
 }
 
